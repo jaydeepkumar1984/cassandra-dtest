@@ -1,4 +1,6 @@
 import os
+import random
+import threading
 import time
 import pytest
 import logging
@@ -20,6 +22,9 @@ class TestHintedHandoffConfig(Tester):
 
     @jira_ticket CASSANDRA-9035
     """
+    def create_ddl(self, session, rf={'dc1': 3, 'dc2': 3}):
+        create_ks(session, 'orphan_hint_files', rf)
+        session.execute('CREATE TABLE test (id uuid PRIMARY KEY, val1 text, group text)')
 
     def _start_two_node_cluster(self, config_options=None):
         """
@@ -176,6 +181,93 @@ class TestHintedHandoffConfig(Tester):
 
         self._do_hinted_handoff(node1, node2, True)
 
+    @since('3.0')
+    def test_orphan_hint_files(self):
+        condition = threading.Event()
+        cluster = self.cluster
+
+        # throttle hinted handoff so that we can perform different steps like removenode, etc.
+        # while hint delivery is in-progress
+        request_timeout_ms = 2000
+        write_timeout_ms = 5000
+        cluster.set_configuration_options(values={'request_timeout_in_ms': request_timeout_ms,
+                                                  'hinted_handoff_throttle_in_kb': 100,
+                                                  'write_request_timeout_in_ms': write_timeout_ms})
+
+
+        #minrpctimeout + writerpctimeout
+        hint_files_purge_max_delay_in_sec = (request_timeout_ms + write_timeout_ms)/1000
+
+        cluster.populate([3, 3]).start(wait_for_binary_proto=True)
+        node1 = cluster.nodelist()[0]
+        node2 = cluster.nodelist()[1]
+
+        session = self.patient_cql_connection(node2)
+        session.consistency_level = 'LOCAL_QUORUM'
+
+        self.create_ddl(session)
+
+        class ThreadedQuery(threading.Thread):
+
+            def __init__(self, connection, condition):
+                threading.Thread.__init__(self)
+                self.connection = connection
+                self.continue_traffic = True
+                self.condition = condition
+
+            def run(self):
+                session = self.connection
+                j = 0
+                try:
+                    while self.continue_traffic:
+                        session.execute("INSERT INTO orphan_hint_files.test (id, val1, group) VALUES (%s, '%s', '%s')" % (str(uuid.uuid1()), "ABC", "PQRST"))
+                        j = j + 1
+                        if (j > 10000):
+                            self.condition.set()
+                except Exception:
+                    self.condition.set()
+
+            def stop_traffic(self):
+                self.continue_traffic = False
+
+        threads = []
+        for x in range(20):
+            conn = self.cql_connection(random.choice(cluster.nodelist()))
+            threads.append(ThreadedQuery(conn, condition))
+
+        # stop node for a while to let hints built up
+        node1.nodetool('disablebinary')
+        node1.nodetool('disablegossip')
+
+        for t in threads:
+            t.start()
+
+        # wait for threads to insert at-least some data
+        condition.wait()
+
+        node1.nodetool('enablegossip')
+        node1.nodetool('enablebinary')
+
+        time.sleep(1)
+        # start node so hints get propagated
+        node1.nodetool('stopdaemon')
+
+        # now remove node from the cluster
+        node2.nodetool('assassinate 127.0.0.1')
+
+        for t in threads:
+            t.stop_traffic()
+
+        for t in threads:
+            t.join()
+
+        # wait until hint thread removes files for the just assassinated node
+        time.sleep(hint_files_purge_max_delay_in_sec)
+
+        #verify that there are no orphan hint files present
+        for node in cluster.nodelist():
+            for name in os.listdir(os.path.join(node.get_path(), 'hints')):
+                self.fail("Hints should not be present after we assassinated a node {}".format(name))
 
 class TestHintedHandoff(Tester):
 
