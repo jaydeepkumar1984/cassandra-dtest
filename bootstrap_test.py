@@ -706,44 +706,6 @@ class TestBootstrap(Tester):
     @since('2.2')
     def test_bootstrap_binary_disabled(self):
         """
-        Test binary while bootstraping
-        """
-        cluster = self.cluster
-        cluster.populate(2)
-
-        node1 = cluster.nodes['node1']
-        # set up byteman
-        node1.byteman_port = '8100'
-        node1.import_config_files()
-
-        cluster.start(wait_other_notice=True)
-        # kill stream to node3 in the middle of streaming to let it fail
-        if cluster.version() < '4.0':
-            node1.byteman_submit([self.byteman_submit_path_pre_4_0])
-        else:
-            node1.byteman_submit([self.byteman_submit_path_4_0])
-        node1.stress(['write', 'n=1K', 'no-warmup', 'cl=TWO', '-schema', 'replication(factor=2)', '-rate', 'threads=50'])
-        cluster.flush()
-
-        # start bootstrapping node3 and wait for streaming
-        node3 = new_node(cluster)
-        node3.start(wait_other_notice=True)
-        binary_enabled = False
-        try:
-            node3.wait_for_binary_interface(timeout=60)
-            binary_enabled = True
-        except TimeoutError:
-            pass
-        assert binary_enabled == False
-
-        node3.watch_log_for('Some data streaming failed')
-        node3.nodetool('bootstrap resume')
-        node3.wait_for_binary_interface()
-        assert_bootstrap_state(self, node3, 'COMPLETED')
-
-    @since('2.2')
-    def test_bootstrap_binary_disabled(self):
-        """
         Test binary while bootstrapping and streaming fails
         @jira_ticket CASSANDRA-14526, CASSANDRA-14525
         """
