@@ -764,7 +764,7 @@ class TestBootstrap(Tester):
             node2.byteman_submit([self.byteman_submit_path_4_0])
         node3.start(jvm_args=["-Dcassandra.write_survey=true", "-Dcassandra.ring_delay_ms=5000"], wait_other_notice=True)
         self.assert_log_had_msg(node3, 'Some data streaming failed', timeout=30)
-        self.assert_log_had_msg(node3, 'Not starting client transports as bootstrap has not completed', timeout=30)
+        self.assert_log_had_msg(node3, "Not starting client transports in write_survey mode as it's bootstrapping or auth is enabled", timeout=30)
 
         try:
             node3.nodetool('join')
@@ -773,7 +773,7 @@ class TestBootstrap(Tester):
             assert "Cannot join the ring until bootstrap completes" in t.stdout
 
         node3.nodetool('bootstrap resume')
-        self.assert_log_had_msg(node3, "Not starting client transports as write_survey mode and authentication is enabled", timeout=30)
+        self.assert_log_had_msg(node3, "Not starting client transports in write_survey mode as it's bootstrapping or auth is enabled", timeout=30)
 
         # Should succeed in joining
         node3.nodetool('join')
