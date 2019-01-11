@@ -1205,6 +1205,7 @@ class TestPreJoinCallback(Tester):
 
             node2.set_configuration_options(values=yaml_opts)
             node2.start(wait_other_notice=True, wait_for_binary_proto=False)
+            node2.watch_log_for('Some data streaming failed. Use nodetool to check bootstrap state and resume.')
 
             node2.nodetool("bootstrap resume")
             node2.watch_log_for('Starting listening for CQL clients')
